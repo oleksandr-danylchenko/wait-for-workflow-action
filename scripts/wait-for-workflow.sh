@@ -169,7 +169,7 @@ else
     matching_run=$(jq -c \
       --arg ref "$branch_name" \
       --arg sha "$target_sha" \
-      '[.workflow_runs[] | select(.head_branch == $ref and .head_sha == $sha)] | sort_by(.created_at) | last // empty' \
+      '[.workflow_runs[] | select(.head_branch == $ref and .head_sha == $sha)] | sort_by(.created_at) | .[-1] // empty' \
       "$resp_file")
 
     if [ -n "$matching_run" ] && [ "$matching_run" != "null" ]; then

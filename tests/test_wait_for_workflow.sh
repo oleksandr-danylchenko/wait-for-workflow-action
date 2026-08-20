@@ -48,6 +48,17 @@ assert_empty_file() {
   fi
 }
 
+assert_line_count() {
+  local expected="$1"
+  local file="$2"
+  local actual
+  actual=$(wc -l < "$file" | tr -d ' ')
+  if [ "$actual" != "$expected" ]; then
+    echo "Expected ${file} to contain ${expected} lines, got ${actual}" >&2
+    exit 1
+  fi
+}
+
 create_fake_curl() {
   local bin_dir="$1"
 
@@ -217,6 +228,7 @@ EOF
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/202" "${case_dir}/requests.log"
   assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/101" "${case_dir}/requests.log"
   assert_contains_line "1" "${case_dir}/sleeps.log"
+  assert_line_count "1" "${case_dir}/sleeps.log"
 }
 
 test_exits_immediately_when_latest_sha_already_succeeded() {
