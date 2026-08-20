@@ -2,6 +2,8 @@
 
 [![Test WaitForWorkflow](https://github.com/kamilchodola/wait-for-workflow-action/actions/workflows/test.yml/badge.svg)](https://github.com/kamilchodola/wait-for-workflow-action/actions/workflows/test.yml)
 
+> **Security Notice:** This action has been security-hardened. See [SECURITY.md](SECURITY.md) for the full audit report and details of all fixes applied.
+
 This GitHub Action waits for a specified workflow to complete before proceeding with the next steps in your workflow. It is useful when you have dependent workflows and want to ensure that one completes successfully before continuing with the next. For example, you might want to ensure that a build or test workflow finishes successfully before starting a deployment workflow.
 
 ## Inputs
@@ -72,4 +74,10 @@ In case, you already have run_id, you can pass it this way:
 ## Notes
 
 - If the `ref` input is not provided or is left empty, the action will use the current `github.ref` as the branch reference. This is useful when you want to wait for a workflow run on the same branch that triggered the current workflow.
-- The maximum wait time is specified in minutes. The default value is 3 minutes if not provided. If the workflow has not been triggered or completed after the specified maximum wait time, the action will exit with an error. You can increase this value if you expect the workflow to take longer to start or complete. Keep in mind that the GitHub Actions runner has a default timeout of 6 hours for a job, so ensure your wait time falls within this limit.
+
+## Security Recommendations
+
+- Always pass `GITHUB_TOKEN` via `secrets.*` — never hard-code it in your workflow file.
+- Grant the token only the minimum required scopes (`actions: read` is sufficient for most use-cases).
+- See [SECURITY.md](SECURITY.md) for the full security audit and a description of all hardening measures applied to this action.
+- The maximum wait time is specified in minutes. The default value is 5 minutes if not provided. If the workflow has not been triggered or completed after the specified maximum wait time, the action will exit with an error. You can increase this value if you expect the workflow to take longer to start or complete. Keep in mind that the GitHub Actions runner has a default timeout of 6 hours for a job, so ensure your wait time falls within this limit.

@@ -1,90 +1,197 @@
 #!/bin/bash
+# wait-for-workflow.sh — Security-hardened implementation
+# See SECURITY.md for a full audit report.
+set -euo pipefail
 
-# Set the maximum waiting time (in minutes) and initialize the counter
-max_wait_minutes="${MAX_WAIT_MINUTES}"
-timeout="${TIMEOUT}"
-interval="${INTERVAL}"
-counter=0
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+log_info()  { echo "ℹ️  $*"; }
+log_wait()  { echo "⏳ $*"; }
+log_ok()    { echo "✅ $*"; }
+log_error() { echo "❌ $*" >&2; }
 
-# Get the current time in ISO 8601 format
-current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+validate_input() {
+  local var_name="$1"
+  local var_value="$2"
+  if [ -z "$var_value" ]; then
+    log_error "Missing required input: $var_name"
+    exit 1
+  fi
+}
+
+validate_positive_int() {
+  local var_name="$1"
+  local var_value="$2"
+  if ! [[ "$var_value" =~ ^[0-9]+$ ]] || [ "$var_value" -le 0 ]; then
+    log_error "$var_name must be a positive integer, got: $var_value"
+    exit 1
+  fi
+}
+
+validate_numeric_id() {
+  local id_name="$1"
+  local id_value="$2"
+  if ! [[ "$id_value" =~ ^[0-9]+$ ]]; then
+    log_error "Invalid $id_name received from API (expected numeric, got non-numeric value)"
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# API helper: make an authenticated GitHub API request and return the body.
+# Usage: api_get <url> <output_file>
+# Exits on non-200 HTTP status codes.
+# ---------------------------------------------------------------------------
+api_get() {
+  local url="$1"
+  local out_file="$2"
+  local http_code
+  # Token is written to a temp config file so it is NOT passed as a CLI argument,
+  # preventing exposure in process listings (ps aux) and shell history.
+  local auth_config="$tmp_dir/curl_auth.conf"
+  printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" > "$auth_config"
+  http_code=$(curl -s -w "%{http_code}" -o "$out_file" \
+    -K "$auth_config" \
+    -H "Accept: application/vnd.github+json" \
+    "$url")
+  case "$http_code" in
+    200) return 0 ;;
+    401) log_error "Authentication failed. Check that GITHUB_TOKEN is valid."; exit 1 ;;
+    403) log_error "Permission denied. The token may lack required scopes."; exit 1 ;;
+    404) log_error "Resource not found. Check org_name, repo_name, and workflow_id inputs."; exit 1 ;;
+    429) log_error "API rate limit exceeded. Please try again later."; exit 1 ;;
+    *)   log_error "Unexpected API response (HTTP $http_code)."; exit 1 ;;
+  esac
+}
+
+validate_json() {
+  local file="$1"
+  if ! jq . "$file" > /dev/null 2>&1; then
+    log_error "Invalid JSON received from GitHub API."
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Validate all inputs up front
+# ---------------------------------------------------------------------------
+validate_input "ORG_NAME"  "${ORG_NAME:-}"
+validate_input "REPO_NAME" "${REPO_NAME:-}"
+validate_input "GITHUB_TOKEN" "${GITHUB_TOKEN:-}"
+
+max_wait_minutes="${MAX_WAIT_MINUTES:-5}"
+timeout="${TIMEOUT:-30}"
+interval="${INTERVAL:-10}"
+
+validate_positive_int "max_wait_minutes" "$max_wait_minutes"
+validate_positive_int "timeout"          "$timeout"
+validate_positive_int "interval"         "$interval"
+
+# Validate REF before normalising it
+validate_input "REF" "${REF:-}"
 
 # Check if REF has the prefix "refs/heads/" and append it if not
-if [[ ! "$REF" =~ ^refs/heads/ ]]; then
-  REF="refs/heads/$REF"
+if [[ ! "${REF}" =~ ^refs/heads/ ]]; then
+  REF="refs/heads/${REF}"
 fi
 
-echo "ℹ️ Organization: ${ORG_NAME}"
-echo "ℹ️ Repository: ${REPO_NAME}"
-echo "ℹ️ Reference: $REF"
-echo "ℹ️ Maximum wait time: ${max_wait_minutes} minutes"
-echo "ℹ️ Timeout for the workflow to complete: ${timeout} minutes"
-echo "ℹ️ Interval between checks: ${interval} seconds"
+log_info "Reference: $REF"
+log_info "Maximum wait time: ${max_wait_minutes} minutes"
+log_info "Timeout for the workflow to complete: ${timeout} minutes"
+log_info "Interval between checks: ${interval} seconds"
 
-# If RUN_ID is not empty, use it directly
-if [ -n "${RUN_ID}" ]; then
+# Temporary directory for API response files; cleaned up on exit
+tmp_dir=$(mktemp -d)
+trap 'rm -rf "$tmp_dir"' EXIT
+
+counter=0
+
+# ---------------------------------------------------------------------------
+# Determine run_id
+# ---------------------------------------------------------------------------
+if [ -n "${RUN_ID:-}" ]; then
+  validate_numeric_id "RUN_ID" "${RUN_ID}"
   run_id="${RUN_ID}"
-  echo "ℹ️ Using provided Run ID: $run_id"
+  log_info "Using provided Run ID."
 else
-  workflow_id="${WORKFLOW_ID}" # Id of the target workflow
-  echo "ℹ️ Workflow ID: $workflow_id"
+  validate_input "WORKFLOW_ID" "${WORKFLOW_ID:-}"
+  workflow_id="${WORKFLOW_ID}"
 
-  # Wait for the workflow to be triggered
+  # Add a small time buffer to guard against minor clock skew between the
+  # runner and GitHub servers (fixes race condition in workflow detection).
+  buffer_seconds=300
+  current_time=$(date -u -d "-${buffer_seconds} seconds" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+    || date -u -v -"${buffer_seconds}"S +"%Y-%m-%dT%H:%M:%SZ")
+
+  resp_file="$tmp_dir/runs.json"
+
   while true; do
-    echo "⏳ Waiting for the workflow to be triggered..."
-    response=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" \
-      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs")
-    if echo "$response" | grep -q "API rate limit exceeded"; then
-      echo "❌ API rate limit exceeded. Please try again later."
-      exit 1
-    elif echo "$response" | grep -q "Not Found"; then
-      echo "❌ Invalid input provided (organization, repository, or workflow ID). Please check your inputs."
-      exit 1
-    fi
-    run_id=$(echo "$response" | \
-      jq -r --arg ref "$(echo "$REF" | sed 's/refs\/heads\///')" --arg current_time "$current_time" \
-      '.workflow_runs[] | select(.head_branch == $ref and .created_at >= $current_time) | .id')
+    log_wait "Waiting for the workflow to be triggered..."
+
+    api_get \
+      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs" \
+      "$resp_file"
+    validate_json "$resp_file"
+
+    # Select the most recent matching run (head-1 guards against multiple matches)
+    run_id=$(jq -r \
+      --arg ref "$(echo "$REF" | sed 's/refs\/heads\///')" \
+      --arg current_time "$current_time" \
+      '[.workflow_runs[] | select(.head_branch == $ref and .created_at >= $current_time)] | sort_by(.created_at) | last | .id // empty' \
+      "$resp_file")
+
     if [ -n "$run_id" ]; then
-      echo "🎉 Workflow triggered! Run ID: $run_id"
+      validate_numeric_id "run_id" "$run_id"
+      log_ok "Workflow triggered!"
       break
     fi
 
-    # Increment the counter and check if the maximum waiting time is reached
     counter=$((counter + 1))
-    if [ $((counter * $interval)) -ge $((max_wait_minutes * 60)) ]; then
-      echo "❌ Maximum waiting time for the workflow to be triggered has been reached. Exiting."
+    if [ $(( counter * interval )) -ge $(( max_wait_minutes * 60 )) ]; then
+      log_error "Maximum waiting time for the workflow to be triggered has been reached. Exiting."
       exit 1
     fi
 
-    sleep $interval
+    sleep "$interval"
   done
 fi
 
-# Wait for the triggered workflow to complete and check its conclusion
+# ---------------------------------------------------------------------------
+# Wait for the triggered workflow run to complete
+# ---------------------------------------------------------------------------
 timeout_counter=0
+run_file="$tmp_dir/run.json"
+
 while true; do
-  echo "⌛ Waiting for the workflow to complete..."
-  run_data=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" \
-    "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/runs/$run_id")
-  status=$(echo "$run_data" | jq -r '.status')
+  log_wait "Waiting for the workflow to complete..."
+
+  api_get \
+    "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/runs/${run_id}" \
+    "$run_file"
+  validate_json "$run_file"
+
+  status=$(jq -r '.status // empty' "$run_file")
 
   if [ "$status" = "completed" ]; then
-    conclusion=$(echo "$run_data" | jq -r '.conclusion')
+    conclusion=$(jq -r '.conclusion // empty' "$run_file")
     if [ "$conclusion" != "success" ]; then
-      echo "❌ The workflow has not completed successfully. Exiting."
+      log_error "The workflow did not complete successfully (conclusion: ${conclusion:-unknown}). Exiting."
       exit 1
     else
-      echo "✅ The workflow completed successfully! Exiting."
+      log_ok "The workflow completed successfully! Exiting."
       break
     fi
   fi
 
-  # Increment the timeout counter and check if the timeout has been reached
   timeout_counter=$((timeout_counter + 1))
-  if [ $((timeout_counter * interval)) -ge $((timeout * 60)) ]; then
-    echo "❌ Timeout waiting for the workflow to complete. Exiting."
+  if [ $(( timeout_counter * interval )) -ge $(( timeout * 60 )) ]; then
+    log_error "Timeout waiting for the workflow to complete. Exiting."
     exit 1
   fi
 
-  sleep $interval
+  sleep "$interval"
 done
