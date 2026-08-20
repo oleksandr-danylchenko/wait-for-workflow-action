@@ -211,7 +211,7 @@ EOF
   assert_contains "Target SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "${output_file}"
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/202" "${case_dir}/requests.log"
   assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/101" "${case_dir}/requests.log"
-  assert_contains "1" "${case_dir}/sleeps.log"
+  assert_contains_line "1" "${case_dir}/sleeps.log"
 }
 
 test_exits_immediately_when_latest_sha_already_succeeded() {
