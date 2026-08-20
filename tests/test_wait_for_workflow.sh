@@ -239,6 +239,7 @@ EOF
   run_script "${case_dir}" "${output_file}"
 
   assert_contains "already completed successfully" "${output_file}"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/git/ref/heads/main" "${case_dir}/requests.log"
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
   assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/404" "${case_dir}/requests.log"
   assert_empty_file "${case_dir}/sleeps.log"
