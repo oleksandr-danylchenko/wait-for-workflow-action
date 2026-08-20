@@ -404,7 +404,7 @@ EOF
       if [ "$i" -gt 1 ]; then
         printf ','
       fi
-      printf '{"id":%d,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","created_at":"2026-08-20T11:%02d:00Z"}' "$i" $((i % 60))
+      printf '{"id":%d,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","created_at":"2026-08-20T%02d:%02d:00Z"}' "$i" $((11 + ((i - 1) / 60))) $(((i - 1) % 60))
     done
     printf ']}\n'
   } > "${case_dir}/runs_1.json"
