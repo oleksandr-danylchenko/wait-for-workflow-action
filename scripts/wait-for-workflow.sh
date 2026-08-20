@@ -41,6 +41,23 @@ validate_numeric_id() {
   fi
 }
 
+validate_commit_sha() {
+  local sha_name="$1"
+  local sha_value="$2"
+  if ! [[ "$sha_value" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    log_error "$sha_name must be a valid Git commit SHA, got: $sha_value"
+    exit 1
+  fi
+}
+
+url_encode() {
+  jq -nr --arg value "$1" '$value | @uri'
+}
+
+url_encode_path_preserving_slashes() {
+  jq -nr --arg value "$1" '$value | split("/") | map(@uri) | join("/")'
+}
+
 # ---------------------------------------------------------------------------
 # API helper: make an authenticated GitHub API request and return the body.
 # Usage: api_get <url> <output_file>
@@ -103,6 +120,8 @@ if [[ ! "${REF}" =~ ^refs/heads/ ]]; then
   REF="refs/heads/${REF}"
 fi
 
+branch_name="$(echo "$REF" | sed 's/refs\/heads\///')"
+
 log_info "Reference: $REF"
 log_info "Maximum wait time: ${max_wait_minutes} minutes"
 log_info "Timeout for the workflow to complete: ${timeout} minutes"
@@ -124,36 +143,74 @@ if [ -n "${RUN_ID:-}" ]; then
 else
   validate_input "WORKFLOW_ID" "${WORKFLOW_ID:-}"
   workflow_id="${WORKFLOW_ID}"
-
-  # Subtract a small buffer to guard against minor clock skew between the
-  # runner and GitHub servers.  Note: a large buffer (e.g. 5 minutes) risks
-  # matching a pre-existing stale run from the same workflow/branch.  For
-  # reliable detection, provide an explicit RUN_ID or keep the buffer small
-  # relative to how frequently the same workflow is triggered.
-  buffer_seconds=30
-  current_time=$(date -u -d "-${buffer_seconds} seconds" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
-    || date -u -v -"${buffer_seconds}"S +"%Y-%m-%dT%H:%M:%SZ")
-
+  ref_file="$tmp_dir/ref.json"
   resp_file="$tmp_dir/runs.json"
 
-  while true; do
-    log_wait "Waiting for the workflow to be triggered..."
-
+  if [ -n "${SHA:-}" ]; then
+    validate_commit_sha "target_sha" "${SHA}"
+    target_sha="${SHA,,}"
+    log_info "Using provided SHA."
+  else
+    encoded_ref="$(url_encode_path_preserving_slashes "${REF#refs/}")"
     api_get \
-      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs" \
-      "$resp_file"
-    validate_json "$resp_file"
+      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/git/ref/${encoded_ref}" \
+      "$ref_file"
+    validate_json "$ref_file"
 
-    # Select the most recent matching run (head-1 guards against multiple matches)
-    run_id=$(jq -r \
-      --arg ref "$(echo "$REF" | sed 's/refs\/heads\///')" \
-      --arg current_time "$current_time" \
-      '[.workflow_runs[] | select(.head_branch == $ref and .created_at >= $current_time)] | sort_by(.created_at) | last | .id // empty' \
-      "$resp_file")
+    target_sha=$(jq -r '.object.sha // empty' "$ref_file")
+    if [ -z "$target_sha" ]; then
+      log_error "Unable to determine the latest commit SHA for ${REF}."
+      exit 1
+    fi
+    log_info "Using latest commit SHA from ${REF}."
+  fi
 
-    if [ -n "$run_id" ]; then
+  validate_commit_sha "target_sha" "$target_sha"
+  log_info "Target SHA: $target_sha"
+
+  while true; do
+    log_wait "Waiting for a matching workflow run for ${target_sha}..."
+
+    matching_run=""
+    page=1
+    encoded_branch="$(url_encode_path_preserving_slashes "$branch_name")"
+
+    while true; do
+      api_get \
+        "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs?branch=${encoded_branch}&per_page=100&page=${page}" \
+        "$resp_file"
+      validate_json "$resp_file"
+
+      matching_run=$(jq -c \
+        --arg ref "$branch_name" \
+        --arg sha "$target_sha" \
+        '[.workflow_runs[]? | select(.head_branch == $ref and .head_sha == $sha)] | sort_by(.created_at) | if length > 0 then .[-1] else empty end' \
+        "$resp_file")
+
+      if [ -n "$matching_run" ] && [ "$matching_run" != "null" ]; then
+        break
+      fi
+
+      if [ "$(jq '.workflow_runs | length' "$resp_file")" -lt 100 ]; then
+        break
+      fi
+
+      page=$((page + 1))
+    done
+
+    if [ -n "$matching_run" ] && [ "$matching_run" != "null" ]; then
+      run_id=$(printf '%s' "$matching_run" | jq -r '.id // empty')
       validate_numeric_id "run_id" "$run_id"
-      log_ok "Workflow triggered!"
+
+      status=$(printf '%s' "$matching_run" | jq -r '.status // empty')
+      conclusion=$(printf '%s' "$matching_run" | jq -r '.conclusion // empty')
+
+      if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+        log_ok "A matching workflow run for ${target_sha} has already completed successfully. Exiting."
+        exit 0
+      fi
+
+      log_ok "Matching workflow run found for ${target_sha}."
       break
     fi
 
