@@ -59,6 +59,20 @@ assert_line_count() {
   fi
 }
 
+assert_all_lines_equal() {
+  local expected="$1"
+  local file="$2"
+  if [ ! -s "$file" ]; then
+    echo "Expected ${file} to contain only '${expected}' lines, but it was empty" >&2
+    exit 1
+  fi
+
+  if grep -Fvxq "$expected" "$file"; then
+    echo "Expected every line in ${file} to equal '${expected}'" >&2
+    exit 1
+  fi
+}
+
 create_fake_curl() {
   local bin_dir="$1"
 
@@ -141,7 +155,11 @@ fi
 
 cp "$response_path" "$out_file"
 if [ -n "$write_out" ]; then
-  printf '%s' "$write_out" | sed 's/%{http_code}/200/g'
+  status_code="200"
+  if [ -f "${response_path}.status" ]; then
+    status_code="$(cat "${response_path}.status")"
+  fi
+  printf '%s' "$write_out" | sed "s/%{http_code}/${status_code}/g"
 fi
 EOF
 
@@ -227,8 +245,8 @@ EOF
   assert_contains "Target SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "${output_file}"
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/202" "${case_dir}/requests.log"
   assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/101" "${case_dir}/requests.log"
-  assert_contains_line "1" "${case_dir}/sleeps.log"
   assert_line_count "1" "${case_dir}/sleeps.log"
+  assert_all_lines_equal "1" "${case_dir}/sleeps.log"
 }
 
 test_exits_immediately_when_latest_sha_already_succeeded() {
@@ -292,6 +310,8 @@ EOF
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/606" "${case_dir}/requests.log"
   assert_contains "The workflow completed successfully! Exiting." "${output_file}"
+  assert_line_count "2" "${case_dir}/sleeps.log"
+  assert_all_lines_equal "1" "${case_dir}/sleeps.log"
 }
 
 test_explicit_run_id_skips_branch_and_workflow_lookup() {
