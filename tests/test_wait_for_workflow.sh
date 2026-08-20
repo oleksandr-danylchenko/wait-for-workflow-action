@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_ROOT="/home/runner/work/wait-for-workflow-action/wait-for-workflow-action"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_PATH="${REPO_ROOT}/scripts/wait-for-workflow.sh"
 
 assert_contains() {
@@ -18,6 +18,14 @@ assert_not_contains() {
   local file="$2"
   if grep -Fq "$needle" "$file"; then
     echo "Did not expect '${needle}' in ${file}" >&2
+    exit 1
+  fi
+}
+
+assert_empty_file() {
+  local file="$1"
+  if [ -s "$file" ]; then
+    echo "Expected ${file} to be empty" >&2
     exit 1
   fi
 }
@@ -202,6 +210,7 @@ EOF
 
   assert_contains "already completed successfully" "${output_file}"
   assert_not_contains "/actions/runs/404" "${case_dir}/requests.log"
+  assert_empty_file "${case_dir}/sleeps.log"
 }
 
 test_waits_for_matching_run_to_appear_and_then_complete() {
