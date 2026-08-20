@@ -386,7 +386,7 @@ EOF
   run_script "${case_dir}" "${output_file}" "REF=refs/heads/feature/topic#1"
 
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/git/ref/heads/feature/topic%231" "${case_dir}/requests.log"
-  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=feature%2Ftopic%231&per_page=100&page=1" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=feature/topic%231&per_page=100&page=1" "${case_dir}/requests.log"
 }
 
 test_searches_later_pages_for_matching_run() {

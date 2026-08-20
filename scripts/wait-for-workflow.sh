@@ -173,7 +173,7 @@ else
 
     matching_run=""
     page=1
-    encoded_branch="$(url_encode "$branch_name")"
+    encoded_branch="$(url_encode_path_preserving_slashes "$branch_name")"
 
     while true; do
       api_get \
