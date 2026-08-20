@@ -54,14 +54,18 @@ api_get() {
   # preventing exposure in process listings (ps aux) and shell history.
   local auth_config="$tmp_dir/curl_auth.conf"
   printf 'header = "Authorization: token %s"\n' "${GITHUB_TOKEN}" > "$auth_config"
+  # Capture curl's exit status explicitly so that transport-level failures
+  # (DNS, TLS, connection timeout) are reported even under set -e.
+  # The || suppresses set -e for this assignment; $? is captured immediately
+  # before log_error can overwrite it.
   http_code=$(curl -s -w "%{http_code}" -o "$out_file" \
     -K "$auth_config" \
     -H "Accept: application/vnd.github+json" \
-    "$url")
+    "$url") || { local curl_exit=$?; log_error "Network error contacting GitHub API (curl exit ${curl_exit})."; exit 1; }
   case "$http_code" in
     200) return 0 ;;
     401) log_error "Authentication failed. Check that GITHUB_TOKEN is valid."; exit 1 ;;
-    403) log_error "Permission denied. The token may lack required scopes."; exit 1 ;;
+    403) log_error "Permission denied or rate limit exceeded. The token may lack required scopes, or the API secondary rate limit was hit."; exit 1 ;;
     404) log_error "Resource not found. Check org_name, repo_name, and workflow_id inputs."; exit 1 ;;
     429) log_error "API rate limit exceeded. Please try again later."; exit 1 ;;
     *)   log_error "Unexpected API response (HTTP $http_code)."; exit 1 ;;
@@ -121,9 +125,12 @@ else
   validate_input "WORKFLOW_ID" "${WORKFLOW_ID:-}"
   workflow_id="${WORKFLOW_ID}"
 
-  # Add a small time buffer to guard against minor clock skew between the
-  # runner and GitHub servers (fixes race condition in workflow detection).
-  buffer_seconds=300
+  # Subtract a small buffer to guard against minor clock skew between the
+  # runner and GitHub servers.  Note: a large buffer (e.g. 5 minutes) risks
+  # matching a pre-existing stale run from the same workflow/branch.  For
+  # reliable detection, provide an explicit RUN_ID or keep the buffer small
+  # relative to how frequently the same workflow is triggered.
+  buffer_seconds=30
   current_time=$(date -u -d "-${buffer_seconds} seconds" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
     || date -u -v -"${buffer_seconds}"S +"%Y-%m-%dT%H:%M:%SZ")
 

@@ -69,13 +69,13 @@ elif echo "$response" | grep -q "Not Found"; then ...
 
 Only two specific strings were checked. HTTP 401 / 403 / 5xx responses went undetected and silently produced empty variables.
 
-**Fix:** The `api_get` helper captures the HTTP status code with `curl -w "%{http_code}"` and handles every status class explicitly:
+**Fix:** The `api_get` helper captures the HTTP status code with `curl -w "%{http_code}"` and handles every status class explicitly. curl's own exit status is also checked before the `case` statement so that transport-level failures (DNS, TLS, connection timeout) produce a structured error message rather than silently terminating the script under `set -e`:
 
 | Code | Meaning | Action |
 |------|---------|--------|
 | 200  | OK | Continue |
 | 401  | Unauthorized | Exit with auth error |
-| 403  | Forbidden | Exit with permission error |
+| 403  | Forbidden / secondary rate limit | Exit with permission-or-rate-limit error |
 | 404  | Not Found | Exit with resource error |
 | 429  | Rate Limited | Exit with rate-limit error |
 | other | Unexpected | Exit with HTTP code |
@@ -107,7 +107,7 @@ select(.created_at >= $current_time)
 
 If the workflow was triggered a few seconds before `current_time` was captured (clock skew, scheduling latency) it would never be found.
 
-**Fix:** A 5-minute buffer is subtracted from `current_time` so runs created slightly before the script started are still matched. The `jq` query also now selects the **most recent** matching run (`sort_by(.created_at) | last`) instead of returning all matches, preventing selection of a stale run.
+**Fix:** A small buffer (30 seconds) is subtracted from `current_time` so runs created slightly before the script started are still matched. The `jq` query also selects the **most recent** matching run (`sort_by(.created_at) | last`) instead of returning all matches. Note: a large buffer risks accepting a stale run from the same workflow/branch triggered just before the script started. For reliable detection in high-frequency pipelines, supply an explicit `run_id` input.
 
 ---
 
