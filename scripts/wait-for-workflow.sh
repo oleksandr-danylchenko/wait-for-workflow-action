@@ -44,7 +44,7 @@ validate_numeric_id() {
 validate_commit_sha() {
   local sha_name="$1"
   local sha_value="$2"
-  if ! [[ "$sha_value" =~ ^[0-9a-f]{40}$ ]]; then
+  if ! [[ "$sha_value" =~ ^[0-9a-fA-F]{40}$ ]]; then
     log_error "$sha_name must be a valid Git commit SHA, got: $sha_value"
     exit 1
   fi
@@ -147,6 +147,7 @@ else
   resp_file="$tmp_dir/runs.json"
 
   if [ -n "${SHA:-}" ]; then
+    validate_commit_sha "target_sha" "${SHA}"
     target_sha="${SHA,,}"
     log_info "Using provided SHA."
   else
