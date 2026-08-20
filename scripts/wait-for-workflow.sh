@@ -44,10 +44,18 @@ validate_numeric_id() {
 validate_commit_sha() {
   local sha_name="$1"
   local sha_value="$2"
-  if ! [[ "$sha_value" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+  if ! [[ "$sha_value" =~ ^[0-9a-f]{40}$ ]]; then
     log_error "$sha_name must be a valid Git commit SHA, got: $sha_value"
     exit 1
   fi
+}
+
+url_encode() {
+  jq -nr --arg value "$1" '$value | @uri'
+}
+
+url_encode_path_preserving_slashes() {
+  jq -nr --arg value "$1" '$value | split("/") | map(@uri) | join("/")'
 }
 
 # ---------------------------------------------------------------------------
@@ -139,11 +147,12 @@ else
   resp_file="$tmp_dir/runs.json"
 
   if [ -n "${SHA:-}" ]; then
-    target_sha="${SHA}"
+    target_sha="${SHA,,}"
     log_info "Using provided SHA."
   else
+    encoded_ref="$(url_encode_path_preserving_slashes "${REF#refs/}")"
     api_get \
-      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/git/ref/${REF#refs/}" \
+      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/git/ref/${encoded_ref}" \
       "$ref_file"
     validate_json "$ref_file"
 
@@ -161,16 +170,32 @@ else
   while true; do
     log_wait "Waiting for a matching workflow run for ${target_sha}..."
 
-    api_get \
-      "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs?per_page=100" \
-      "$resp_file"
-    validate_json "$resp_file"
+    matching_run=""
+    page=1
+    encoded_branch="$(url_encode "$branch_name")"
 
-    matching_run=$(jq -c \
-      --arg ref "$branch_name" \
-      --arg sha "$target_sha" \
-      '[.workflow_runs[]? | select(.head_branch == $ref and .head_sha == $sha)] | sort_by(.created_at) | if length > 0 then .[-1] else empty end' \
-      "$resp_file")
+    while true; do
+      api_get \
+        "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs?branch=${encoded_branch}&per_page=100&page=${page}" \
+        "$resp_file"
+      validate_json "$resp_file"
+
+      matching_run=$(jq -c \
+        --arg ref "$branch_name" \
+        --arg sha "$target_sha" \
+        '[.workflow_runs[]? | select(.head_branch == $ref and .head_sha == $sha)] | sort_by(.created_at) | if length > 0 then .[-1] else empty end' \
+        "$resp_file")
+
+      if [ -n "$matching_run" ] && [ "$matching_run" != "null" ]; then
+        break
+      fi
+
+      if [ "$(jq '.workflow_runs | length' "$resp_file")" -lt 100 ]; then
+        break
+      fi
+
+      page=$((page + 1))
+    done
 
     if [ -n "$matching_run" ] && [ "$matching_run" != "null" ]; then
       run_id=$(printf '%s' "$matching_run" | jq -r '.id // empty')

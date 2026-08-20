@@ -270,7 +270,7 @@ EOF
 
   assert_contains "already completed successfully" "${output_file}"
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/git/ref/heads/main" "${case_dir}/requests.log"
-  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=main&per_page=100&page=1" "${case_dir}/requests.log"
   assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/404" "${case_dir}/requests.log"
   assert_empty_file "${case_dir}/sleeps.log"
 }
@@ -307,7 +307,7 @@ EOF
   local output_file="${case_dir}/output.log"
   run_script "${case_dir}" "${output_file}"
 
-  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=main&per_page=100&page=1" "${case_dir}/requests.log"
   assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/606" "${case_dir}/requests.log"
   assert_contains "The workflow completed successfully! Exiting." "${output_file}"
   assert_line_count "2" "${case_dir}/sleeps.log"
@@ -332,7 +332,7 @@ EOF
   assert_not_contains "/actions/workflows/" "${case_dir}/requests.log"
 }
 
-test_explicit_sha_skips_branch_lookup() {
+test_explicit_sha_is_normalized_and_skips_branch_lookup() {
   local case_dir
   case_dir="$(mktemp -d)"
   setup_case "${case_dir}"
@@ -344,17 +344,96 @@ test_explicit_sha_skips_branch_lookup() {
 EOF
 
   local output_file="${case_dir}/output.log"
-  run_script "${case_dir}" "${output_file}" "SHA=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  run_script "${case_dir}" "${output_file}" "SHA=EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
 
   assert_contains "Using provided SHA." "${output_file}"
-  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
+  assert_contains "Target SHA: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" "${output_file}"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=main&per_page=100&page=1" "${case_dir}/requests.log"
   assert_not_contains "/git/ref/" "${case_dir}/requests.log"
+}
+
+test_rejects_abbreviated_explicit_sha() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  setup_case "${case_dir}"
+
+  local output_file="${case_dir}/output.log"
+  if run_script "${case_dir}" "${output_file}" "SHA=abcdef1"; then
+    echo "Expected abbreviated SHA to be rejected" >&2
+    exit 1
+  fi
+
+  assert_contains "target_sha must be a valid Git commit SHA, got: abcdef1" "${output_file}"
+  assert_empty_file "${case_dir}/requests.log"
+}
+
+test_url_encodes_ref_path_when_fetching_branch_sha() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  setup_case "${case_dir}"
+
+  cat > "${case_dir}/branch.json" <<'EOF'
+{"object":{"sha":"ffffffffffffffffffffffffffffffffffffffff"}}
+EOF
+
+  cat > "${case_dir}/runs.json" <<'EOF'
+{"workflow_runs":[
+  {"id":909,"head_branch":"feature/topic#1","head_sha":"ffffffffffffffffffffffffffffffffffffffff","status":"completed","conclusion":"success","created_at":"2026-08-20T11:05:00Z"}
+]}
+EOF
+
+  local output_file="${case_dir}/output.log"
+  run_script "${case_dir}" "${output_file}" "REF=refs/heads/feature/topic#1"
+
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/git/ref/heads/feature/topic%231" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=feature%2Ftopic%231&per_page=100&page=1" "${case_dir}/requests.log"
+}
+
+test_searches_later_pages_for_matching_run() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  setup_case "${case_dir}"
+
+  cat > "${case_dir}/branch.json" <<'EOF'
+{"object":{"sha":"9999999999999999999999999999999999999999"}}
+EOF
+
+  {
+    printf '{"workflow_runs":['
+    for i in $(seq 1 100); do
+      if [ "$i" -gt 1 ]; then
+        printf ','
+      fi
+      printf '{"id":%d,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","created_at":"2026-08-20T11:%02d:00Z"}' "$i" $((i % 60))
+    done
+    printf ']}\n'
+  } > "${case_dir}/runs_1.json"
+
+  cat > "${case_dir}/runs_2.json" <<'EOF'
+{"workflow_runs":[
+  {"id":1001,"head_branch":"main","head_sha":"9999999999999999999999999999999999999999","status":"in_progress","conclusion":null,"created_at":"2026-08-20T11:59:00Z"}
+]}
+EOF
+
+  cat > "${case_dir}/run_1001_1.json" <<'EOF'
+{"status":"completed","conclusion":"success"}
+EOF
+
+  local output_file="${case_dir}/output.log"
+  run_script "${case_dir}" "${output_file}"
+
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=main&per_page=100&page=1" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?branch=main&per_page=100&page=2" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/1001" "${case_dir}/requests.log"
 }
 
 test_waits_for_latest_sha_run_instead_of_stale_branch_run
 test_exits_immediately_when_latest_sha_already_succeeded
 test_waits_for_matching_run_to_appear_and_then_complete
 test_explicit_run_id_skips_branch_and_workflow_lookup
-test_explicit_sha_skips_branch_lookup
+test_explicit_sha_is_normalized_and_skips_branch_lookup
+test_rejects_abbreviated_explicit_sha
+test_url_encodes_ref_path_when_fetching_branch_sha
+test_searches_later_pages_for_matching_run
 
 echo "All wait-for-workflow tests passed."
