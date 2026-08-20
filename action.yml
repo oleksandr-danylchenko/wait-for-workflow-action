@@ -13,6 +13,9 @@ inputs:
   run_id:
     description: 'If provided will wait for workflow run with specified id'
     required: false
+  sha:
+    description: 'Commit SHA to wait for. If omitted, the latest commit SHA on ref is used'
+    required: false
   max_wait_minutes:
     description: 'Maximum time script will wait to workflow run to be found in minutes'
     required: false
@@ -44,6 +47,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
         WORKFLOW_ID: ${{ inputs.workflow_id }}
         RUN_ID: ${{ inputs.run_id }}
+        SHA: ${{ inputs.sha }}
         MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
         INTERVAL: ${{ inputs.interval }}
         TIMEOUT: ${{ inputs.timeout }}
