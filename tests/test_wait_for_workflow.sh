@@ -13,11 +13,29 @@ assert_contains() {
   fi
 }
 
+assert_contains_line() {
+  local needle="$1"
+  local file="$2"
+  if ! grep -Fxq "$needle" "$file"; then
+    echo "Expected line '${needle}' in ${file}" >&2
+    exit 1
+  fi
+}
+
 assert_not_contains() {
   local needle="$1"
   local file="$2"
   if grep -Fq "$needle" "$file"; then
     echo "Did not expect '${needle}' in ${file}" >&2
+    exit 1
+  fi
+}
+
+assert_not_contains_line() {
+  local needle="$1"
+  local file="$2"
+  if grep -Fxq "$needle" "$file"; then
+    echo "Did not expect line '${needle}' in ${file}" >&2
     exit 1
   fi
 }
@@ -39,11 +57,16 @@ set -euo pipefail
 
 out_file=""
 url=""
+write_out=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o)
       out_file="$2"
+      shift 2
+      ;;
+    -w)
+      write_out="$2"
       shift 2
       ;;
     *)
@@ -101,7 +124,9 @@ case "$url" in
 esac
 
 cp "$response_path" "$out_file"
-printf '200'
+if [ -n "$write_out" ]; then
+  printf '%s' "${write_out//\%\{http_code\}/200}"
+fi
 EOF
 
   chmod +x "${bin_dir}/curl"
@@ -184,8 +209,8 @@ EOF
   run_script "${case_dir}" "${output_file}"
 
   assert_contains "Target SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "${output_file}"
-  assert_contains "/actions/runs/202" "${case_dir}/requests.log"
-  assert_not_contains "/actions/runs/101" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/202" "${case_dir}/requests.log"
+  assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/101" "${case_dir}/requests.log"
   assert_contains "1" "${case_dir}/sleeps.log"
 }
 
@@ -209,7 +234,7 @@ EOF
   run_script "${case_dir}" "${output_file}"
 
   assert_contains "already completed successfully" "${output_file}"
-  assert_not_contains "/actions/runs/404" "${case_dir}/requests.log"
+  assert_not_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/404" "${case_dir}/requests.log"
   assert_empty_file "${case_dir}/sleeps.log"
 }
 
@@ -245,8 +270,8 @@ EOF
   local output_file="${case_dir}/output.log"
   run_script "${case_dir}" "${output_file}"
 
-  assert_contains "/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
-  assert_contains "/actions/runs/606" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/606" "${case_dir}/requests.log"
   assert_contains "The workflow completed successfully! Exiting." "${output_file}"
 }
 
@@ -263,7 +288,7 @@ EOF
   run_script "${case_dir}" "${output_file}" "RUN_ID=777"
 
   assert_contains "Using provided Run ID." "${output_file}"
-  assert_contains "/actions/runs/777" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/runs/777" "${case_dir}/requests.log"
   assert_not_contains "/git/ref/" "${case_dir}/requests.log"
   assert_not_contains "/actions/workflows/" "${case_dir}/requests.log"
 }
@@ -283,7 +308,7 @@ EOF
   run_script "${case_dir}" "${output_file}" "SHA=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
   assert_contains "Using provided SHA." "${output_file}"
-  assert_contains "/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
+  assert_contains_line "https://api.github.com/repos/octo-org/octo-repo/actions/workflows/build.yml/runs?per_page=100" "${case_dir}/requests.log"
   assert_not_contains "/git/ref/" "${case_dir}/requests.log"
 }
 
