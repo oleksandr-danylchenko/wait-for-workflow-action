@@ -148,7 +148,10 @@ else
     validate_json "$ref_file"
 
     target_sha=$(jq -r '.object.sha // empty' "$ref_file")
-    validate_input "target_sha" "$target_sha"
+    if [ -z "$target_sha" ] || [ "$target_sha" = "null" ]; then
+      log_error "Unable to determine the latest commit SHA for ${REF}."
+      exit 1
+    fi
     log_info "Using latest commit SHA from ${REF}."
   fi
 
